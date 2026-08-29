@@ -49,7 +49,7 @@ def _pg_url_from_parts() -> str:
                 or str(pg.get("database") or "")).strip()
     if not (host and user and password and database):
         return ""
-    ssl = (os.environ.get("PGSSLMODE") or "prefer").strip()
+    ssl = (os.environ.get("PGSSLMODE") or "disable").strip()
     return (
         f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
         f"@{host}:{port}/{database}?sslmode={ssl}"
@@ -72,7 +72,7 @@ def pg_connect_kwargs(url: str) -> dict:
     if "supabase.co" in url.lower():
         kw["sslmode"] = "require"
     else:
-        kw["sslmode"] = "prefer"
+        kw["sslmode"] = "disable"
     return kw
 
 

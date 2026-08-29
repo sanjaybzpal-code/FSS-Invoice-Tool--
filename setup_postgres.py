@@ -22,7 +22,7 @@ def _write_env(url: str, user: str, password: str) -> None:
         f"PGDATABASE={DEFAULT_DB}\n"
         f"PGUSER={user}\n"
         f"PGPASSWORD={password}\n"
-        "PGSSLMODE=prefer\n"
+        "PGSSLMODE=disable\n"
     )
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(body)
@@ -48,7 +48,7 @@ def main() -> int:
         return 1
     url = (
         f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
-        f"@{DEFAULT_HOST}:{DEFAULT_PORT}/{DEFAULT_DB}?sslmode=prefer"
+        f"@{DEFAULT_HOST}:{DEFAULT_PORT}/{DEFAULT_DB}?sslmode=disable"
     )
     os.environ["DATABASE_URL"] = url
     os.environ["PGUSER"] = user

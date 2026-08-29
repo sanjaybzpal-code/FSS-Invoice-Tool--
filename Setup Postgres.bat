@@ -16,7 +16,7 @@ if %errorlevel%==0 (
 )
 echo.
 echo Vercel → Environment Variables:
-echo   DATABASE_URL = postgresql://USER:PASSWORD@43.205.3.136:5432/fss_invoice?sslmode=prefer
+echo   DATABASE_URL = postgresql://USER:PASSWORD@43.205.3.136:5432/fss_invoice?sslmode=disable
 echo   FLASK_SECRET_KEY = (random long text)
 echo   ADMIN_USERNAME / ADMIN_PASSWORD = site login
 echo Then Redeploy.
