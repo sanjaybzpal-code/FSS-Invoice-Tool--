@@ -51,14 +51,14 @@ def main() -> int:
         or ""
     ).strip()
     if not url:
-        print("Set SUPABASE_DB_URL to your Supabase URI (Settings → Database → URI).")
+        print("Set DATABASE_URL (postgresql://user:pass@43.205.3.136:5432/fss_invoice).")
         return 1
 
     print("Connecting to local SQL Server...")
     local, saved = _local_connect()
     try:
         lc = local.cursor()
-        print("Applying Supabase schema...")
+        print("Applying PostgreSQL schema...")
         for k, v in saved.items():
             os.environ[k] = v
         import db
@@ -67,8 +67,7 @@ def main() -> int:
         pg_url = url
         if pg_url.startswith("postgres://"):
             pg_url = "postgresql://" + pg_url[len("postgres://"):]
-        kw = {"sslmode": "require"} if "supabase.co" in pg_url.lower() else {}
-        pg = psycopg2.connect(pg_url, **kw)
+        pg = psycopg2.connect(pg_url, **db.pg_connect_kwargs(pg_url))
         pc = pg.cursor()
         total = 0
         for mssql, pgname, identity in TABLES:
@@ -128,8 +127,8 @@ def main() -> int:
         pg.commit()
         pc.close()
         pg.close()
-        print(f"Done — {total} rows copied to Supabase.")
-        print("Add SUPABASE_DB_URL on Vercel, then Redeploy.")
+        print(f"Done — {total} rows copied to PostgreSQL.")
+        print("Add DATABASE_URL on Vercel, then Redeploy.")
         return 0
     finally:
         try:

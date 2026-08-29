@@ -450,7 +450,7 @@ def api_generate():
             ok=False,
             message=(
                 f"PDF/Excel ban gaya, lekin invoice database mein save nahi hua: {exc}. "
-                "Office PC par SQL Server chalu rakho, ya Vercel par SUPABASE_DB_URL set karo."
+                "Office PC par SQL Server chalu rakho, ya Vercel par DATABASE_URL (Postgres) set karo."
             ),
             files=files,
         ), 500

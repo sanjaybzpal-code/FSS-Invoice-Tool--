@@ -11,13 +11,69 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 SQL_DIR = os.path.join(HERE, "database")
 
 
+def _load_dotenv() -> None:
+    path = os.path.join(HERE, ".env")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
+
+def _pg_url_from_parts() -> str:
+    from urllib.parse import quote_plus
+    try:
+        pg = load_config().get("postgres") or {}
+    except Exception:
+        pg = {}
+    host = (os.environ.get("PGHOST") or os.environ.get("POSTGRES_HOST")
+            or str(pg.get("host") or "")).strip()
+    user = (os.environ.get("PGUSER") or os.environ.get("POSTGRES_USER") or "").strip()
+    password = os.environ.get("PGPASSWORD") or os.environ.get("POSTGRES_PASSWORD") or ""
+    port = (os.environ.get("PGPORT") or os.environ.get("POSTGRES_PORT")
+            or str(pg.get("port") or "5432")).strip()
+    database = (os.environ.get("PGDATABASE") or os.environ.get("POSTGRES_DB")
+                or str(pg.get("database") or "")).strip()
+    if not (host and user and password and database):
+        return ""
+    ssl = (os.environ.get("PGSSLMODE") or "prefer").strip()
+    return (
+        f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
+        f"@{host}:{port}/{database}?sslmode={ssl}"
+    )
+
+
 def supabase_url() -> str:
     return (
         os.environ.get("SUPABASE_DB_URL")
         or os.environ.get("DATABASE_URL")
         or os.environ.get("POSTGRES_URL")
-        or ""
+        or _pg_url_from_parts()
     ).strip()
+
+
+def pg_connect_kwargs(url: str) -> dict:
+    kw = {"connect_timeout": 20}
+    if "sslmode=" in url.lower():
+        return kw
+    if "supabase.co" in url.lower():
+        kw["sslmode"] = "require"
+    else:
+        kw["sslmode"] = "prefer"
+    return kw
 
 
 def supabase_configured() -> bool:
@@ -166,10 +222,7 @@ def get_connection(config: dict | None = None):
         from sql_pg import PgConnection
         if url.startswith("postgres://"):
             url = "postgresql://" + url[len("postgres://"):]
-        kw = {}
-        if "supabase.co" in url.lower():
-            kw["sslmode"] = "require"
-        return PgConnection(psycopg2.connect(url, **kw))
+        return PgConnection(psycopg2.connect(url, **pg_connect_kwargs(url)))
 
     if _is_vercel():
         host, user, password, database = _vercel_credentials(config)
@@ -220,8 +273,7 @@ def migrate(config: dict | None = None) -> str:
         url = supabase_url()
         if url.startswith("postgres://"):
             url = "postgresql://" + url[len("postgres://"):]
-        kw = {"sslmode": "require"} if "supabase.co" in url.lower() else {}
-        raw = psycopg2.connect(url, **kw)
+        raw = psycopg2.connect(url, **pg_connect_kwargs(url))
         raw.autocommit = True
         cur = raw.cursor()
         pg_dir = os.path.join(SQL_DIR, "postgres")

@@ -1,8 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/" }
-  ],
   "functions": {
     "index.py": {
       "maxDuration": 60,

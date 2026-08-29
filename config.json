@@ -33,6 +33,11 @@
         "database": "FSSInvoice",
         "trusted_connection": true
     },
+    "postgres": {
+        "host": "43.205.3.136",
+        "port": 5432,
+        "database": "fss_invoice"
+    },
     "paths": {
         "clients_workbook": "..\\FSS PROJECT SHEETS - CLIENTS LIST.xlsx",
         "clients_sheet": "CLIENTS ",
