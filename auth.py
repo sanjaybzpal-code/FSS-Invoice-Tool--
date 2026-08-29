@@ -7,7 +7,7 @@ import json
 import os
 import secrets
 
-from flask import redirect, session, url_for
+from flask import jsonify, redirect, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import runtime_paths as rp
@@ -294,12 +294,24 @@ def current_user():
     return session.get("user")
 
 
+def _wants_json() -> bool:
+    path = request.path or ""
+    if path.startswith("/api/"):
+        return True
+    accept = (request.headers.get("Accept") or "").lower()
+    return "application/json" in accept and "text/html" not in accept.split(",")[0]
+
+
 def login_required(view):
     @functools.wraps(view)
     def wrapped(*args, **kwargs):
         if needs_setup():
+            if _wants_json():
+                return jsonify(ok=False, message="First-time setup is required."), 401
             return redirect(url_for("setup"))
         if not current_user():
+            if _wants_json():
+                return jsonify(ok=False, message="Session expired. Please log in again."), 401
             return redirect(url_for("login"))
         return view(*args, **kwargs)
     return wrapped

@@ -395,10 +395,17 @@
     const btn = $('generate'); btn.disabled = true; btn.textContent = 'Generating…';
     try{
       const res = await fetch('/api/generate', {
-        method:'POST', headers:{'Content-Type':'application/json'},
+        method:'POST',
+        headers:{'Content-Type':'application/json', 'Accept':'application/json'},
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
+      const raw = await res.text();
+      let data;
+      try { data = JSON.parse(raw); }
+      catch {
+        toast('Generate failed (server returned a page, not JSON). Status ' + res.status + '. Log in again, then Redeploy on Vercel.', 'err');
+        return;
+      }
       if(!data.ok){ toast(data.message || 'Failed.', 'err'); return; }
       $('invoiceNo').value = data.next_number;
       triggerDownloads(data.files);

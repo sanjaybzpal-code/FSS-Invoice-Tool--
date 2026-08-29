@@ -341,17 +341,31 @@ def _collect_items(raw_items):
             raise ValueError(f"Invalid amount for: {particulars}")
         if amount < 0:
             raise ValueError(f"Negative amount for: {particulars}")
+        if amount == 0:
+            continue
         items.append({"particulars": particulars,
                       "date": (it.get("date") or "").strip(),
                       "amount": amount})
     return items
 
 
+@app.errorhandler(Exception)
+def _json_api_errors(exc):
+    from werkzeug.exceptions import HTTPException
+    if not (request.path or "").startswith("/api/"):
+        if isinstance(exc, HTTPException):
+            return exc
+        raise exc
+    code = exc.code if isinstance(exc, HTTPException) else 500
+    msg = exc.description if isinstance(exc, HTTPException) else str(exc)
+    return jsonify(ok=False, message=msg or "Server error"), code
+
+
 @app.route("/api/generate", methods=["POST"])
 @auth.login_required
 def api_generate():
     config = load_config()
-    data = request.get_json(force=True)
+    data = request.get_json(silent=True) or {}
 
     invoice_no = (data.get("invoice_no") or "").strip()
     invoice_date = (data.get("invoice_date") or "").strip()
