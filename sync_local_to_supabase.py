@@ -30,14 +30,28 @@ TABLES = [
 ]
 
 
+def _pg_cell(value):
+    if isinstance(value, bool):
+        return 1 if value else 0
+    return value
+
+
 def _local_connect():
+    """Always the office SQL Server — never the cloud Postgres URL."""
     saved = {}
-    for key in ("SUPABASE_DB_URL", "DATABASE_URL", "POSTGRES_URL"):
-        if key in os.environ:
+    for key in list(os.environ):
+        if key in (
+            "SUPABASE_DB_URL", "DATABASE_URL", "POSTGRES_URL",
+            "PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGPORT",
+            "POSTGRES_HOST", "POSTGRES_USER", "POSTGRES_PASSWORD",
+            "POSTGRES_DB", "POSTGRES_PORT", "PGSSLMODE",
+        ) or key.startswith("PG"):
             saved[key] = os.environ.pop(key)
     import db
     try:
-        return db.get_connection(), saved
+        pyodbc = db._import_pyodbc()
+        conn = pyodbc.connect(db.connection_string(), autocommit=False)
+        return conn, saved
     except Exception:
         for k, v in saved.items():
             os.environ[k] = v
@@ -69,6 +83,17 @@ def main() -> int:
             pg_url = "postgresql://" + pg_url[len("postgres://"):]
         pg = psycopg2.connect(pg_url, **db.pg_connect_kwargs(pg_url))
         pc = pg.cursor()
+        pc.execute(
+            """TRUNCATE TABLE
+               receiptinvoiceallocations, receiptnongstallocations,
+               invoicelineitems, expensesegmentallocations,
+               receipts, expenses, taxinvoices, nongstbills,
+               reminderhistory, whatsapplog, projectcosts,
+               auditlog, bankimportlog, clientmaster, businesssegments,
+               expensecategories, ledgersequence
+               CASCADE"""
+        )
+        pg.commit()
         total = 0
         for mssql, pgname, identity in TABLES:
             try:
@@ -97,7 +122,7 @@ def main() -> int:
                 ph = ", ".join(["%s"] * len(cols))
                 ins = f"INSERT INTO {pgname} ({col_list}) VALUES ({ph})"
                 for row in rows:
-                    pc.execute(ins, tuple(row))
+                    pc.execute(ins, tuple(_pg_cell(v) for v in row))
                 pg.commit()
                 print(f"  {mssql}: {len(rows)} rows")
                 total += len(rows)

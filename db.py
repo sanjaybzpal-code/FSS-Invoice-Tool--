@@ -269,6 +269,24 @@ def _run_sql_file(cursor, path: str) -> None:
         cursor.execute(batch)
 
 
+def _run_pg_stmt(cursor, stmt: str) -> None:
+    if not stmt or all(s.strip().startswith("--") or not s.strip() for s in stmt.splitlines()):
+        return
+    try:
+        cursor.execute(stmt)
+    except Exception as exc:
+        msg = str(exc).lower()
+        skip = (
+            "already exists",
+            "must be owner",
+            "duplicate",
+            "already a view",
+        )
+        if any(s in msg for s in skip):
+            return
+        raise
+
+
 def _run_pg_file(cursor, path: str) -> None:
     with open(path, "r", encoding="utf-8") as fh:
         text = fh.read()
@@ -278,11 +296,8 @@ def _run_pg_file(cursor, path: str) -> None:
         if line.rstrip().endswith(";"):
             stmt = "\n".join(buf).strip()
             buf = []
-            if stmt and not all(s.strip().startswith("--") or not s.strip() for s in stmt.splitlines()):
-                cursor.execute(stmt)
-    tail = "\n".join(buf).strip()
-    if tail:
-        cursor.execute(tail)
+            _run_pg_stmt(cursor, stmt)
+    _run_pg_stmt(cursor, "\n".join(buf).strip())
 
 
 def migrate(config: dict | None = None) -> str:
