@@ -84,6 +84,9 @@ def list_clients(active_only: bool = True) -> list[dict]:
 
 
 def get_client(client_id: int) -> dict | None:
+    s = _snap()
+    if s:
+        return s.get_client(client_id)
     with db.get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM dbo.ClientMaster WHERE ClientId = ?", client_id)

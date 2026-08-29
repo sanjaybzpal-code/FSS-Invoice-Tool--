@@ -184,6 +184,13 @@ def list_clients(active_only: bool = True) -> list[dict]:
     return sorted(rows, key=lambda r: r.get("ClientName") or "")
 
 
+def get_client(client_id: int) -> dict | None:
+    for c in _tables().get("ClientMaster", []):
+        if int(c.get("ClientId", 0)) == int(client_id):
+            return dict(c)
+    return None
+
+
 def list_invoices(client_id: int | None = None, limit: int = 500,
                   segment_id: int | None = None,
                   invoice_type: str | None = None) -> list[dict]:

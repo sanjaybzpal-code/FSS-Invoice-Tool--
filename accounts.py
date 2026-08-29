@@ -9,6 +9,7 @@ from flask import (Blueprint, flash, jsonify, redirect, render_template, request
                    send_file, url_for)
 
 import auth
+import invoice_files as inf
 import ledger_service as ls
 from ledger_reports import export_ledger_excel, export_ledger_pdf
 
@@ -69,14 +70,9 @@ def invoices():
             ql = q.lower()
             rows = [r for r in rows if ql in (r.get("ClientName") or "").lower()
                     or ql in str(r.get("InvoiceNumber") or "").lower()]
-        import json
-        cfg_path = os.path.join(HERE, "config.json")
-        with open(cfg_path, "r", encoding="utf-8") as fh:
-            config = json.load(fh)
-        rel = config["paths"]["output_folder"]
-        out_folder = rel if os.path.isabs(rel) else os.path.join(HERE, rel)
+        out_folder = inf.write_folder()
         archive_path = out_folder
-        rows = ls.enrich_invoices_with_files(rows, out_folder)
+        rows = inf.enrich_for_archive(rows)
         import segment_service as seg
         segments = seg.list_segments()
         clients = ls.list_clients()
@@ -96,7 +92,6 @@ def invoice_download(invoice_id, fmt):
         flash("Invalid format.")
         return redirect(url_for("accounts.invoices"))
     try:
-        import json
         inv = ls.get_invoice(invoice_id)
         if not inv:
             flash("Invoice not found.")
@@ -105,15 +100,7 @@ def invoice_download(invoice_id, fmt):
         if seg_id and inv.get("BusinessSegmentId") != seg_id:
             flash("You cannot access invoices from other segments.")
             return redirect(url_for("accounts.invoices"))
-        with open(os.path.join(HERE, "config.json"), "r", encoding="utf-8") as fh:
-            config = json.load(fh)
-        rel = config["paths"]["output_folder"]
-        out_folder = rel if os.path.isabs(rel) else os.path.join(HERE, rel)
-        paths = ls.invoice_download_paths(inv, out_folder)
-        path = paths["pdf"] if fmt == "pdf" else paths["excel"]
-        if not path:
-            flash(f"No {fmt.upper()} file stored for this invoice.")
-            return redirect(url_for("accounts.invoices"))
+        path = inf.ensure_download(inv, fmt)
         return send_file(path, as_attachment=True,
                          download_name=os.path.basename(path))
     except Exception as exc:  # noqa: BLE001
@@ -221,10 +208,8 @@ def invoice_edit(invoice_id):
             # --- Optionally regenerate files ---
             if request.form.get("regenerate"):
                 try:
-                    with open(os.path.join(HERE, "config.json"), "r", encoding="utf-8") as fh:
-                        config = _json.load(fh)
-                    rel = config["paths"]["output_folder"]
-                    out_folder = rel if os.path.isabs(rel) else os.path.join(HERE, rel)
+                    config = inf.load_config()
+                    out_folder = inf.write_folder()
                     import clients as clients_mod
                     client_obj = clients_mod.Client(
                         code=str(new_client_id),
@@ -294,7 +279,6 @@ def invoice_convert_to_tax(invoice_id):
         flash("Only proforma invoices can be converted to tax invoices.")
         return redirect(url_for("accounts.invoices"))
 
-    import json as _json
     import re as _re
     from generator import generate_invoice
     from pdf_generator import generate_pdf_invoice
@@ -302,11 +286,8 @@ def invoice_convert_to_tax(invoice_id):
     import audit as audit_mod
 
     try:
-        cfg_path = os.path.join(HERE, "config.json")
-        with open(cfg_path, "r", encoding="utf-8") as fh:
-            config = _json.load(fh)
-        rel = config["paths"]["output_folder"]
-        out_folder = rel if os.path.isabs(rel) else os.path.join(HERE, rel)
+        config = inf.load_config()
+        out_folder = inf.write_folder()
         os.makedirs(out_folder, exist_ok=True)
 
         line_items = ls.get_invoice_line_items(invoice_id)
