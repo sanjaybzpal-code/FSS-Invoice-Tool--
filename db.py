@@ -11,6 +11,19 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 SQL_DIR = os.path.join(HERE, "database")
 
 
+def supabase_url() -> str:
+    return (
+        os.environ.get("SUPABASE_DB_URL")
+        or os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or ""
+    ).strip()
+
+
+def supabase_configured() -> bool:
+    return bool(supabase_url())
+
+
 def _is_vercel() -> bool:
     if os.name == "nt":
         return False
@@ -92,8 +105,8 @@ def vercel_db_configured() -> bool:
 
 
 def use_snapshot_fallback() -> bool:
-    """Vercel without Azure SQL — use bundled vercel_data/snapshot.json."""
-    if not _is_vercel() or vercel_db_configured():
+    """Vercel without Azure SQL or Supabase — use bundled snapshot.json."""
+    if not _is_vercel() or vercel_db_configured() or supabase_configured():
         return False
     try:
         import vercel_snapshot as vs
@@ -146,7 +159,18 @@ def master_connection_string(config: dict | None = None) -> str:
 
 
 def get_connection(config: dict | None = None):
-    """SQL Server — pymssql on Vercel; pyodbc on Windows."""
+    """SQL Server locally; Supabase Postgres or Azure SQL in the cloud."""
+    url = supabase_url()
+    if url:
+        import psycopg2
+        from sql_pg import PgConnection
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        kw = {}
+        if "supabase.co" in url.lower():
+            kw["sslmode"] = "require"
+        return PgConnection(psycopg2.connect(url, **kw))
+
     if _is_vercel():
         host, user, password, database = _vercel_credentials(config)
         import pymssql
@@ -172,9 +196,40 @@ def _run_sql_file(cursor, path: str) -> None:
         cursor.execute(batch)
 
 
+def _run_pg_file(cursor, path: str) -> None:
+    with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    buf: list[str] = []
+    for line in text.splitlines():
+        buf.append(line)
+        if line.rstrip().endswith(";"):
+            stmt = "\n".join(buf).strip()
+            buf = []
+            if stmt and not all(s.strip().startswith("--") or not s.strip() for s in stmt.splitlines()):
+                cursor.execute(stmt)
+    tail = "\n".join(buf).strip()
+    if tail:
+        cursor.execute(tail)
+
+
 def migrate(config: dict | None = None) -> str:
     """Create database and apply all scripts. Safe to run multiple times."""
     cfg = config or load_config()
+    if supabase_configured():
+        import psycopg2
+        url = supabase_url()
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        kw = {"sslmode": "require"} if "supabase.co" in url.lower() else {}
+        raw = psycopg2.connect(url, **kw)
+        raw.autocommit = True
+        cur = raw.cursor()
+        pg_dir = os.path.join(SQL_DIR, "postgres")
+        for name in ("schema.sql", "views.sql"):
+            _run_pg_file(cur, os.path.join(pg_dir, name))
+        raw.close()
+        return "Supabase / PostgreSQL schema applied."
+
     if _is_vercel() and not vercel_db_configured():
         return "Skipped migration on Vercel (no database env configured)."
 
@@ -206,8 +261,12 @@ def test_connection(config: dict | None = None) -> tuple[bool, str]:
     try:
         with get_connection(config) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT DB_NAME()")
+            if supabase_configured():
+                cur.execute("SELECT current_database()")
+            else:
+                cur.execute("SELECT DB_NAME()")
             row = cur.fetchone()
-            return True, f"Connected to {row[0]}"
+            label = "Supabase" if supabase_configured() else "SQL Server"
+            return True, f"Connected to {row[0]} ({label})"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)

@@ -1,5 +1,7 @@
 # 24x7 live (office PC band ho to bhi)
 
+**Sabse aasan (card nahi):** [Supabase](SUPABASE.md) — `Setup Supabase.bat`
+
 Office PC + Cloudflare **hamesha ON nahi** reh sakta. Permanent live:
 
 **Azure SQL (FREE) + existing Vercel URL**  
@@ -15,13 +17,9 @@ Azure SQL free: https://aka.ms/azuresqlhub
 
 ---
 
-## Step 1 — Azure SQL Database (free tier)
-
 Yeh app **Flask + SQL Server** par bani hai. Vercel par chalane ke liye **cloud database (Azure SQL)** chahiye — local `(local)` SQL Server Vercel se connect nahi hoga.
 
----
-
-## Step 1 — Azure SQL Database (free tier)
+## Azure SQL Database (free) — details
 
 1. [Azure Portal](https://portal.azure.com) → **Create SQL Database**
 2. Server name note karein: e.g. `fss-invoice.database.windows.net`
