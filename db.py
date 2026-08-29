@@ -41,7 +41,8 @@ def _pg_url_from_parts() -> str:
         pg = {}
     host = (os.environ.get("PGHOST") or os.environ.get("POSTGRES_HOST")
             or str(pg.get("host") or "")).strip()
-    user = (os.environ.get("PGUSER") or os.environ.get("POSTGRES_USER") or "").strip()
+    user = (os.environ.get("PGUSER") or os.environ.get("POSTGRES_USER")
+            or str(pg.get("user") or "postgres")).strip()
     password = os.environ.get("PGPASSWORD") or os.environ.get("POSTGRES_PASSWORD") or ""
     port = (os.environ.get("PGPORT") or os.environ.get("POSTGRES_PORT")
             or str(pg.get("port") or "5432")).strip()
@@ -74,6 +75,17 @@ def pg_connect_kwargs(url: str) -> dict:
     else:
         kw["sslmode"] = "disable"
     return kw
+
+
+def postgres_intended() -> bool:
+    """True when this app is meant to use the cloud PostgreSQL server."""
+    if supabase_url():
+        return True
+    try:
+        pg = load_config().get("postgres") or {}
+        return bool(str(pg.get("host") or "").strip())
+    except Exception:
+        return False
 
 
 def supabase_configured() -> bool:
@@ -161,8 +173,10 @@ def vercel_db_configured() -> bool:
 
 
 def use_snapshot_fallback() -> bool:
-    """Vercel without Azure SQL or Supabase — use bundled snapshot.json."""
-    if not _is_vercel() or vercel_db_configured() or supabase_configured():
+    """Vercel snapshot only if no PostgreSQL / Azure is configured."""
+    if postgres_intended() or supabase_configured() or vercel_db_configured():
+        return False
+    if not _is_vercel():
         return False
     try:
         import vercel_snapshot as vs
@@ -215,7 +229,7 @@ def master_connection_string(config: dict | None = None) -> str:
 
 
 def get_connection(config: dict | None = None):
-    """SQL Server locally; Supabase Postgres or Azure SQL in the cloud."""
+    """PostgreSQL on 43.205.3.136 when configured; otherwise local SQL Server."""
     url = supabase_url()
     if url:
         import psycopg2
@@ -223,6 +237,12 @@ def get_connection(config: dict | None = None):
         if url.startswith("postgres://"):
             url = "postgresql://" + url[len("postgres://"):]
         return PgConnection(psycopg2.connect(url, **pg_connect_kwargs(url)))
+
+    if postgres_intended():
+        raise RuntimeError(
+            "PostgreSQL is required (43.205.3.136 / fss_invoice). "
+            "Set DATABASE_URL or PGPASSWORD. "
+            "On the server, allow this PC in pg_hba.conf (host all all 0.0.0.0/0 md5).")
 
     if _is_vercel():
         host, user, password, database = _vercel_credentials(config)
@@ -280,7 +300,7 @@ def migrate(config: dict | None = None) -> str:
         for name in ("schema.sql", "views.sql"):
             _run_pg_file(cur, os.path.join(pg_dir, name))
         raw.close()
-        return "Supabase / PostgreSQL schema applied."
+        return "PostgreSQL schema applied."
 
     if _is_vercel() and not vercel_db_configured():
         return "Skipped migration on Vercel (no database env configured)."
@@ -313,12 +333,13 @@ def test_connection(config: dict | None = None) -> tuple[bool, str]:
     try:
         with get_connection(config) as conn:
             cur = conn.cursor()
-            if supabase_configured():
+            if supabase_configured() or postgres_intended():
                 cur.execute("SELECT current_database()")
+                label = "PostgreSQL"
             else:
                 cur.execute("SELECT DB_NAME()")
+                label = "SQL Server"
             row = cur.fetchone()
-            label = "Supabase" if supabase_configured() else "SQL Server"
             return True, f"Connected to {row[0]} ({label})"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)

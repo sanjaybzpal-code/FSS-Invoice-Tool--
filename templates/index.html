@@ -122,7 +122,7 @@
   {% if db_ok %}
   <div class="db-ok"><b>{{ db_message or 'Database connected.' }}</b> — <a href="{{ url_for('accounts.invoices') }}">Invoice Archive</a> · <a href="{{ url_for('accounts.receipts') }}">Receipts</a></div>
   {% elif db_message %}
-  <div class="db-bad"><b>Database not connected:</b> {{ db_message }} — saved invoices/receipts will not show until SQL Server is running.</div>
+  <div class="db-bad"><b>Database not connected:</b> {{ db_message }} — invoices save on PostgreSQL 43.205.3.136 (fss_invoice). Fix pg_hba.conf if this PC is blocked.</div>
   {% endif %}
   <div class="card">
     <div class="doctabs" role="tablist">

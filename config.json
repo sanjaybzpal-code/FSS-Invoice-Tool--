@@ -36,7 +36,8 @@
     "postgres": {
         "host": "43.205.3.136",
         "port": 5432,
-        "database": "fss_invoice"
+        "database": "fss_invoice",
+        "user": "postgres"
     },
     "paths": {
         "clients_workbook": "..\\FSS PROJECT SHEETS - CLIENTS LIST.xlsx",
