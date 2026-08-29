@@ -101,8 +101,13 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
-    with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-        json.dump(config, fh, indent=4, ensure_ascii=False)
+    if rp.is_vercel():
+        return
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+            json.dump(config, fh, indent=4, ensure_ascii=False)
+    except OSError:
+        return
 
 
 def safe_filename(text: str) -> str:
@@ -381,7 +386,10 @@ def api_generate():
         if is_proforma:
             invoice_no = ls.next_proforma_number()
         else:
-            invoice_no = str(next_invoice_number(config, out_folder))
+            invoice_no = str(max(
+                next_invoice_number(config, out_folder),
+                ls.max_tax_invoice_number() + 1,
+            ))
     prefix = "Proforma" if is_proforma else "Invoice"
     base = f"{prefix}_{safe_filename(invoice_no)}_{safe_filename(client.name)}"
 
@@ -423,8 +431,15 @@ def api_generate():
         audit_mod.log(auth.current_user(),
                       "generate_proforma" if is_proforma else "generate_invoice",
                       "invoice", str(invoice_no), f"total={totals.total}")
-    except Exception:  # noqa: BLE001 - invoice files still delivered
-        pass
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(
+            ok=False,
+            message=(
+                f"PDF/Excel ban gaya, lekin invoice database mein save nahi hua: {exc}. "
+                "Office PC par SQL Server chalu rakho, ya Vercel par SUPABASE_DB_URL set karo."
+            ),
+            files=files,
+        ), 500
 
     if not is_proforma:
         try:
@@ -434,7 +449,10 @@ def api_generate():
         except ValueError:
             pass
 
-    next_num = ls.peek_proforma_number() if is_proforma else next_invoice_number(config, out_folder)
+    next_num = ls.peek_proforma_number() if is_proforma else max(
+        next_invoice_number(config, out_folder),
+        ls.max_tax_invoice_number() + 1,
+    )
     return jsonify(ok=True, files=files, total=totals.total,
                    subtotal=totals.subtotal, cgst=totals.cgst,
                    sgst=totals.sgst, igst=totals.igst,

@@ -82,6 +82,26 @@ def _merge_tables(base: list[dict], extra: list[dict], pk: str) -> list[dict]:
     return out
 
 
+def _invalidate() -> None:
+    global _CACHE
+    _CACHE = None
+    _tables.cache_clear()
+
+
+def _persist_overlay_rows(table: str, pk: str, rows: list[dict]) -> None:
+    overlay = _load_overlay()
+    overlay[table] = _merge_tables(overlay.get(table, []), rows, pk)
+    os.makedirs(os.path.dirname(OVERLAY_FILE) or ".", exist_ok=True)
+    with open(OVERLAY_FILE, "w", encoding="utf-8") as fh:
+        json.dump({"tables": overlay}, fh, indent=2, default=str, ensure_ascii=False)
+    _invalidate()
+
+
+def _next_pk(table: str, pk: str) -> int:
+    ids = [int(r.get(pk) or 0) for r in _tables().get(table, [])]
+    return max(ids, default=0) + 1
+
+
 @lru_cache(maxsize=1)
 def _tables() -> dict[str, list[dict]]:
     global _CACHE
@@ -266,6 +286,102 @@ def peek_proforma_number() -> str:
 
 def next_proforma_number() -> str:
     return peek_proforma_number()
+
+
+def max_tax_invoice_number() -> int:
+    n = 0
+    for inv in _tables().get("TaxInvoices", []):
+        if (inv.get("InvoiceType") or "TAX").upper() == "PROFORMA":
+            continue
+        try:
+            n = max(n, int(str(inv.get("InvoiceNumber"))))
+        except (TypeError, ValueError):
+            continue
+    return n
+
+
+def upsert_client(name: str, gstin: str = "", address: str = "",
+                  contact: str = "", email: str = "", mobile: str = "",
+                  mh: bool = False) -> int:
+    name = (name or "").strip()
+    for c in _tables().get("ClientMaster", []):
+        if (c.get("ClientName") or "").strip().lower() == name.lower():
+            cid = int(c["ClientId"])
+            updated = dict(c)
+            if gstin:
+                updated["GSTIN"] = gstin
+            if address:
+                updated["Address"] = address
+            if contact:
+                updated["ContactPerson"] = contact
+            if email:
+                updated["Email"] = email
+            if mobile:
+                updated["Mobile"] = mobile
+            updated["MhState"] = 1 if mh else int(c.get("MhState") or 0)
+            _persist_overlay_rows("ClientMaster", "ClientId", [updated])
+            return cid
+    cid = _next_pk("ClientMaster", "ClientId")
+    row = {
+        "ClientId": cid,
+        "ClientName": name,
+        "GSTIN": gstin or "",
+        "Address": address or "",
+        "ContactPerson": contact or "",
+        "Email": email or "",
+        "Mobile": mobile or "",
+        "MhState": 1 if mh else 0,
+        "IsActive": 1,
+        "OpeningBalance": 0,
+    }
+    _persist_overlay_rows("ClientMaster", "ClientId", [row])
+    return cid
+
+
+def record_tax_invoice(client_id: int, invoice_number: str, invoice_date: str,
+                       taxable: float, cgst: float, sgst: float, igst: float,
+                       total: float, supply_type: str, line_items: list[dict],
+                       pdf_path: str = "", excel_path: str = "",
+                       created_by: str = "", segment_id: int = 1,
+                       invoice_type: str = "TAX") -> int:
+    from datetime import timedelta
+    inv_date = _parse_date(invoice_date) or date.today()
+    invoice_id = _next_pk("TaxInvoices", "InvoiceId")
+    inv = {
+        "InvoiceId": invoice_id,
+        "ClientId": int(client_id),
+        "InvoiceNumber": str(invoice_number),
+        "InvoiceDate": inv_date,
+        "DueDate": inv_date + timedelta(days=30),
+        "PaymentTermsDays": 30,
+        "TaxableAmount": float(taxable),
+        "CGSTAmount": float(cgst),
+        "SGSTAmount": float(sgst),
+        "IGSTAmount": float(igst),
+        "TotalAmount": float(total),
+        "SupplyType": supply_type,
+        "PdfPath": pdf_path or "",
+        "ExcelPath": excel_path or "",
+        "CreatedBy": created_by or "",
+        "BusinessSegmentId": segment_id or 1,
+        "InvoiceType": (invoice_type or "TAX").upper(),
+    }
+    _persist_overlay_rows("TaxInvoices", "InvoiceId", [inv])
+    line_id = _next_pk("InvoiceLineItems", "LineId")
+    lines = []
+    for i, it in enumerate(line_items, 1):
+        lines.append({
+            "LineId": line_id,
+            "InvoiceId": invoice_id,
+            "SrNo": i,
+            "Particulars": it.get("particulars") or it.get("Particulars") or "",
+            "WorkDate": _parse_date(it.get("date") or it.get("WorkDate")),
+            "Amount": float(it.get("amount") or it.get("Amount") or 0),
+        })
+        line_id += 1
+    if lines:
+        _persist_overlay_rows("InvoiceLineItems", "LineId", lines)
+    return invoice_id
 
 
 def peek_receipt_number() -> str:

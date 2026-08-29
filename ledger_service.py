@@ -43,6 +43,9 @@ def _parse_date(value: str | date | None) -> date | None:
 def upsert_client(name: str, gstin: str = "", address: str = "",
                   contact: str = "", email: str = "", mobile: str = "",
                   mh: bool = False) -> int:
+    s = _snap()
+    if s:
+        return s.upsert_client(name, gstin, address, contact, email, mobile, mh)
     with db.get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT ClientId FROM dbo.ClientMaster WHERE ClientName = ?", name)
@@ -185,6 +188,12 @@ def record_tax_invoice(client_id: int, invoice_number: str, invoice_date: str,
                        pdf_path: str = "", excel_path: str = "",
                        created_by: str = "", segment_id: int = 1,
                        invoice_type: str = "TAX") -> int:
+    s = _snap()
+    if s:
+        return s.record_tax_invoice(
+            client_id, invoice_number, invoice_date, taxable, cgst, sgst, igst,
+            total, supply_type, line_items, pdf_path, excel_path, created_by,
+            segment_id, invoice_type)
     inv_date = _parse_date(invoice_date) or date.today()
     terms = 30
     try:
@@ -382,6 +391,25 @@ def peek_proforma_number() -> str:
         row = cur.fetchone()
         n = int(row[0]) if row else 1
         return f"PF-{n:05d}"
+
+
+def max_tax_invoice_number() -> int:
+    """Highest numeric tax invoice number (used so cloud numbering does not collide)."""
+    s = _snap()
+    if s:
+        return s.max_tax_invoice_number()
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT InvoiceNumber FROM dbo.TaxInvoices
+               WHERE ISNULL(InvoiceType, N'TAX') <> N'PROFORMA'""")
+        n = 0
+        for (num,) in cur.fetchall():
+            try:
+                n = max(n, int(str(num)))
+            except (TypeError, ValueError):
+                continue
+        return n
 
 
 def list_invoices(client_id: int | None = None, limit: int = 500,
