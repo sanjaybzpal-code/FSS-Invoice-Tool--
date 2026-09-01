@@ -18,6 +18,10 @@ IS_VERCEL = is_vercel()
 
 
 def data_root() -> str:
+    override = os.environ.get("FSS_DATA_DIR", "").strip()
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
     if IS_VERCEL:
         root = os.environ.get("FSS_DATA_DIR", "/tmp/fss-invoice")
         os.makedirs(root, exist_ok=True)

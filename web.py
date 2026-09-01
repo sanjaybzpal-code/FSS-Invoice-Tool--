@@ -78,11 +78,8 @@ def inject_globals():
         "can_expenses": auth.can_expenses(u) if u else False,
         "can_profit": auth.can_profit(u) if u else False,
         "can_management": auth.can_management_dashboard(u) if u else False,
-        "can_edit_invoices": (
-            auth.is_admin(u) if u else False
-        ) or (
-            u and auth.user_segment_id(u) is None
-            and (auth.can(u, "invoices") or auth.can(u, "receipts"))
+        "can_edit_invoices": bool(
+            u and (auth.is_admin(u) or auth.can(u, "invoices") or auth.can(u, "receipts"))
         ),
     }
 
@@ -95,13 +92,13 @@ def load_config() -> dict:
             pass
     with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
         cfg = json.load(fh)
-    if rp.is_vercel():
+    if rp.is_vercel() or os.environ.get("FSS_DATA_DIR"):
         cfg.setdefault("paths", {})["output_folder"] = rp.invoices_dir()
     return cfg
 
 
 def save_config(config: dict) -> None:
-    if rp.is_vercel():
+    if rp.is_vercel() or os.environ.get("FSS_DATA_DIR"):
         return
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
@@ -150,6 +147,9 @@ def lan_ip() -> str:
 
 
 def share_url(config: dict) -> str:
+    public = (os.environ.get("PUBLIC_URL") or "").strip().rstrip("/")
+    if public:
+        return public + "/"
     return f"http://{lan_ip()}:{_server_port(config)}/"
 
 
@@ -396,6 +396,16 @@ def api_generate():
     out_folder = _output_folder(config)
     os.makedirs(out_folder, exist_ok=True)
     import ledger_service as ls
+    existing = None
+    edit_id = int(data.get("invoice_id") or 0)
+    if edit_id:
+        existing = ls.get_invoice(edit_id)
+        if not existing:
+            return jsonify(ok=False, message="Saved invoice not found."), 404
+        if user_seg and existing.get("BusinessSegmentId") and int(existing["BusinessSegmentId"]) != user_seg:
+            return jsonify(ok=False, message="You cannot edit invoices from other segments."), 403
+        if not invoice_no:
+            invoice_no = str(existing.get("InvoiceNumber") or "")
     if not invoice_no:
         if is_proforma:
             invoice_no = ls.next_proforma_number()
@@ -404,6 +414,11 @@ def api_generate():
                 next_invoice_number(config, out_folder),
                 ls.max_tax_invoice_number() + 1,
             ))
+    if existing is None:
+        existing = ls.find_invoice_by_number(invoice_no)
+        if existing and user_seg and existing.get("BusinessSegmentId") and int(existing["BusinessSegmentId"]) != user_seg:
+            return jsonify(ok=False, message="You cannot edit invoices from other segments."), 403
+    is_update = existing is not None
     prefix = "Proforma" if is_proforma else "Invoice"
     base = f"{prefix}_{safe_filename(invoice_no)}_{safe_filename(client.name)}"
 
@@ -428,22 +443,42 @@ def api_generate():
     if not is_proforma:
         record_invoice(invoice_no, client.name, totals.total, invoice_date, files)
 
-    # Post to SQL — proforma stored but excluded from ledger/outstanding views
+    # Post to SQL — update existing number, or insert a new invoice
     try:
         client_id = ls.upsert_client(
             client.name, client.gstin, client.address, mh=client.mh)
         pdf_p = os.path.join(out_folder, base + ".pdf") if any(f.endswith(".pdf") for f in files) else ""
         xlsx_p = os.path.join(out_folder, base + ".xlsx") if any(f.endswith(".xlsx") for f in files) else ""
         inv_type = "PROFORMA" if is_proforma else "TAX"
-        ls.record_tax_invoice(
-            client_id, invoice_no, invoice_date,
-            totals.subtotal, totals.cgst, totals.sgst, totals.igst,
-            totals.total, totals.supply_type, items,
-            pdf_p, xlsx_p, auth.current_user(), segment_id=segment_id,
-            invoice_type=inv_type)
+        if is_update and existing:
+            ls.update_invoice(
+                int(existing["InvoiceId"]),
+                segment_id=segment_id,
+                invoice_date=invoice_date,
+                client_id=client_id,
+                taxable_amount=totals.subtotal,
+                cgst_amount=totals.cgst,
+                sgst_amount=totals.sgst,
+                igst_amount=totals.igst,
+                total_amount=totals.total,
+                supply_type=totals.supply_type,
+                line_items=items,
+                invoice_number=invoice_no,
+                invoice_type=inv_type,
+                pdf_path=pdf_p,
+                excel_path=xlsx_p,
+            )
+        else:
+            ls.record_tax_invoice(
+                client_id, invoice_no, invoice_date,
+                totals.subtotal, totals.cgst, totals.sgst, totals.igst,
+                totals.total, totals.supply_type, items,
+                pdf_p, xlsx_p, auth.current_user(), segment_id=segment_id,
+                invoice_type=inv_type)
         import audit as audit_mod
         audit_mod.log(auth.current_user(),
-                      "generate_proforma" if is_proforma else "generate_invoice",
+                      "edit_invoice" if is_update else (
+                          "generate_proforma" if is_proforma else "generate_invoice"),
                       "invoice", str(invoice_no), f"total={totals.total}")
     except Exception as exc:  # noqa: BLE001
         return jsonify(
@@ -455,13 +490,14 @@ def api_generate():
             files=files,
         ), 500
 
-    if not is_proforma:
-        try:
-            if int(invoice_no) >= config["invoice"]["next_number"]:
-                config["invoice"]["next_number"] = int(invoice_no) + 1
-                save_config(config)
-        except ValueError:
-            pass
+    if not is_update:
+        if not is_proforma:
+            try:
+                if int(invoice_no) >= config["invoice"]["next_number"]:
+                    config["invoice"]["next_number"] = int(invoice_no) + 1
+                    save_config(config)
+            except ValueError:
+                pass
 
     next_num = ls.peek_proforma_number() if is_proforma else max(
         next_invoice_number(config, out_folder),
@@ -472,7 +508,74 @@ def api_generate():
                    sgst=totals.sgst, igst=totals.igst,
                    supply_type=totals.supply_type,
                    document_type=document_type,
+                   updated=is_update,
                    next_number=next_num)
+
+
+def _invoice_json(inv: dict, items: list[dict] | None = None) -> dict:
+    import ledger_service as ls
+    if items is None:
+        items = ls.get_invoice_line_items(int(inv["InvoiceId"]))
+        if not items:
+            amt = float(inv.get("TaxableAmount") or 0) or float(inv.get("TotalAmount") or 0)
+            items = [{"Particulars": "As per invoice",
+                      "WorkDate": inv.get("InvoiceDate"), "Amount": amt}]
+    lines = []
+    for it in items:
+        lines.append({
+            "particulars": it.get("Particulars") or it.get("particulars") or "",
+            "date": format_date(it.get("WorkDate") or it.get("date") or ""),
+            "amount": float(it.get("Amount") if it.get("Amount") is not None else it.get("amount") or 0),
+        })
+    return {
+        "invoice_id": int(inv["InvoiceId"]),
+        "invoice_no": str(inv.get("InvoiceNumber") or ""),
+        "invoice_date": format_date(inv.get("InvoiceDate")),
+        "client_id": inv.get("ClientId"),
+        "client": inv.get("ClientName") or "",
+        "segment_id": inv.get("BusinessSegmentId"),
+        "document_type": "proforma" if (inv.get("InvoiceType") or "TAX").upper() == "PROFORMA" else "tax",
+        "supply_type": inv.get("SupplyType") or "",
+        "items": lines,
+    }
+
+
+@app.route("/api/invoices/recent")
+@auth.login_required
+def api_invoices_recent():
+    import ledger_service as ls
+    try:
+        seg_id = auth.user_segment_id(auth.current_user())
+        rows = ls.list_invoices(limit=500, segment_id=seg_id)
+        out = []
+        for inv in rows:
+            out.append({
+                "invoice_id": int(inv["InvoiceId"]),
+                "invoice_no": str(inv.get("InvoiceNumber") or ""),
+                "invoice_date": format_date(inv.get("InvoiceDate")),
+                "client": inv.get("ClientName") or "",
+                "total": float(inv.get("TotalAmount") or 0),
+                "document_type": "proforma" if (inv.get("InvoiceType") or "TAX").upper() == "PROFORMA" else "tax",
+            })
+        return jsonify(ok=True, invoices=out)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(ok=False, message=str(exc), invoices=[]), 500
+
+
+@app.route("/api/invoice/<int:invoice_id>")
+@auth.login_required
+def api_invoice_get(invoice_id):
+    import ledger_service as ls
+    try:
+        inv = ls.get_invoice(invoice_id)
+        if not inv:
+            return jsonify(ok=False, message="Invoice not found."), 404
+        seg_id = auth.user_segment_id(auth.current_user())
+        if seg_id and inv.get("BusinessSegmentId") and int(inv["BusinessSegmentId"]) != seg_id:
+            return jsonify(ok=False, message="You cannot access invoices from other segments."), 403
+        return jsonify(ok=True, invoice=_invoice_json(inv))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(ok=False, message=str(exc)), 500
 
 
 @app.route("/health")

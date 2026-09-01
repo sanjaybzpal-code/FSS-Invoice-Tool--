@@ -1,0 +1,19 @@
+FSS Invoice — install on AWS (clients use this, not this PC)
+
+AWS Console → EC2 → instance 43.205.3.136 → Connect
+Then paste (put your DB password and a new site login password):
+
+sudo FSS_DB_USER=fss2025 FSS_DB_PASS='DB-PASSWORD' FSS_ADMIN_USER=admin FSS_ADMIN_PASS='SITE-PASSWORD' bash -c 'curl -fsSL https://raw.githubusercontent.com/sanjaybzpal-code/FSS-Invoice-Tool--/main/install_on_server.sh -o /tmp/fss-install.sh && bash /tmp/fss-install.sh'
+
+If curl fails:
+  sudo yum install -y git
+  sudo git clone https://github.com/sanjaybzpal-code/FSS-Invoice-Tool--.git /opt/fss-invoice
+  sudo FSS_DB_PASS='DB-PASSWORD' FSS_ADMIN_PASS='SITE-PASSWORD' bash /opt/fss-invoice/install_on_server.sh
+
+AWS → that instance → Security → Security group → Edit inbound rules:
+  Type HTTP, Port 80, Source 0.0.0.0/0  → Save
+
+Clients open:  http://43.205.3.136
+Login = FSS_ADMIN_USER / FSS_ADMIN_PASS from the paste above.
+
+Database + invoice PDF/Excel stay on the server. Office PC can be OFF.

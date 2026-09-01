@@ -6,4 +6,5 @@ pyodbc>=5.0; sys_platform == 'win32'
 pymssql>=2.3
 pdfplumber>=0.10
 waitress>=3.0
+gunicorn>=22.0; sys_platform != 'win32'
 psycopg2-binary>=2.9
