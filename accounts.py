@@ -110,10 +110,7 @@ def invoice_download(invoice_id, fmt):
 
 
 def _can_edit_invoices() -> bool:
-    u = auth.current_user()
-    if not u:
-        return False
-    return auth.normalize_role(auth.get_role(u)) != auth.ROLE_VIEWER
+    return bool(auth.current_user())
 
 
 def _assert_can_edit_invoice(inv: dict) -> None:

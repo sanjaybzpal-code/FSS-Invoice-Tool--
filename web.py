@@ -78,9 +78,7 @@ def inject_globals():
         "can_expenses": auth.can_expenses(u) if u else False,
         "can_profit": auth.can_profit(u) if u else False,
         "can_management": auth.can_management_dashboard(u) if u else False,
-        "can_edit_invoices": bool(
-            u and auth.normalize_role(auth.get_role(u)) != auth.ROLE_VIEWER
-        ),
+        "can_edit_invoices": bool(u),
     }
 
 

@@ -130,8 +130,6 @@
 
           {% endif %}
 
-          {% if can_edit_invoices %}
-
           <a class="btn ghost" style="padding:5px 10px;font-size:12px"
              href="{{ url_for('accounts.invoice_edit', invoice_id=i.InvoiceId) }}">Edit</a>
           <a class="btn ghost" style="padding:5px 10px;font-size:12px"
@@ -142,8 +140,6 @@
                 style="display:inline" onsubmit="return confirm('Convert to Tax Invoice? This posts to ledger & GST.');">
             <button class="btn primary" style="padding:5px 10px;font-size:12px" type="submit">→ Tax Invoice</button>
           </form>
-          {% endif %}
-
           {% endif %}
 
           {% if not i.has_pdf and not i.has_excel %}
