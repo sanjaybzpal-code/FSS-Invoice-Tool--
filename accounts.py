@@ -83,7 +83,8 @@ def invoices():
                            clients=clients, client_id=client_id,
                            segments=segments, segment_id=seg_id,
                            search_q=q, archive_path=archive_path,
-                           user=auth.current_user())
+                           user=auth.current_user(),
+                           can_edit_invoices=_can_edit_invoices())
 
 
 @accounts_bp.route("/invoices/<int:invoice_id>/download/<fmt>")
@@ -110,11 +111,29 @@ def invoice_download(invoice_id, fmt):
 
 def _can_edit_invoices() -> bool:
     u = auth.current_user()
-    if auth.is_admin(u):
-        return True
-    if auth.user_segment_id(u) is not None:
+    if not u:
         return False
-    return auth.can(u, "invoices") or auth.can(u, "receipts")
+    return auth.normalize_role(auth.get_role(u)) != auth.ROLE_VIEWER
+
+
+def _assert_can_edit_invoice(inv: dict) -> None:
+    if not inv:
+        raise ValueError("Invoice not found.")
+    seg_id = auth.user_segment_id(auth.current_user())
+    if seg_id and inv.get("BusinessSegmentId") and int(inv["BusinessSegmentId"]) != int(seg_id):
+        raise PermissionError("You cannot edit invoices from other segments.")
+
+
+def _line_items_for_edit(invoice_id: int, inv: dict) -> list[dict]:
+    items = ls.get_invoice_line_items(invoice_id)
+    if items:
+        return items
+    amt = float(inv.get("TaxableAmount") or 0) or float(inv.get("TotalAmount") or 0)
+    return [{
+        "Particulars": "As per invoice",
+        "WorkDate": inv.get("InvoiceDate"),
+        "Amount": amt,
+    }]
 
 
 @accounts_bp.route("/invoices/<int:invoice_id>/edit", methods=["GET", "POST"])
@@ -126,11 +145,15 @@ def invoice_edit(invoice_id):
     if not inv:
         flash("Invoice not found.")
         return redirect(url_for("accounts.invoices"))
+    try:
+        _assert_can_edit_invoice(inv)
+    except PermissionError as exc:
+        flash(str(exc))
+        return redirect(url_for("accounts.invoices"))
     import segment_service as seg
-    import json as _json
     segments = seg.list_segments()
     clients = ls.list_clients()
-    line_items = ls.get_invoice_line_items(invoice_id)
+    line_items = _line_items_for_edit(invoice_id, inv)
 
     if request.method == "POST":
         try:
@@ -141,6 +164,7 @@ def invoice_edit(invoice_id):
             inv_date = (request.form.get("invoice_date") or "").strip() or None
             new_client_id = int(request.form.get("client_id") or inv["ClientId"])
             supply_type = (request.form.get("supply_type") or "").strip() or None
+            new_inv_no = (request.form.get("invoice_number") or "").strip() or str(inv["InvoiceNumber"])
 
             # --- Line items ---
             raw_parts = request.form.getlist("particulars[]")
@@ -190,7 +214,6 @@ def invoice_edit(invoice_id):
             total = round(subtotal + cgst + sgst + igst, 2)
 
             # --- Save to DB ---
-            old_seg = inv.get("BusinessSegmentName") or ""
             ls.update_invoice(
                 invoice_id,
                 segment_id=new_seg,
@@ -203,50 +226,24 @@ def invoice_edit(invoice_id):
                 total_amount=total,
                 supply_type=supply_type,
                 line_items=new_items,
+                invoice_number=new_inv_no,
             )
 
-            # --- Optionally regenerate files ---
-            if request.form.get("regenerate"):
+            do_regen = request.form.get("regenerate") == "1" or request.form.get("regenerate") == "on"
+            if do_regen:
                 try:
-                    config = inf.load_config()
-                    out_folder = inf.write_folder()
-                    import clients as clients_mod
-                    client_obj = clients_mod.Client(
-                        code=str(new_client_id),
-                        name=client_row["ClientName"],
-                        gstin=client_row.get("GSTIN") or "",
-                        mh=bool(client_row.get("MhState")),
-                        address=client_row.get("Address") or "",
+                    saved = ls.get_invoice(invoice_id) or inv
+                    paths = inf.rebuild(saved)
+                    ls.update_invoice(
+                        invoice_id,
+                        pdf_path=paths.get("pdf") or "",
+                        excel_path=paths.get("excel") or "",
                     )
-                    import re as _re
-                    def _safe(t):
-                        t = _re.sub(r"[^A-Za-z0-9 _.-]", "", t or "").strip()
-                        return _re.sub(r"\s+", "_", t)[:60] or "invoice"
-                    inv_no = str(inv["InvoiceNumber"])
-                    base = f"Invoice_{_safe(inv_no)}_{_safe(client_obj.name)}"
-                    from generator import generate_invoice
-                    from pdf_generator import generate_pdf_invoice
-                    xlsx_path = os.path.join(out_folder, base + ".xlsx")
-                    pdf_path  = os.path.join(out_folder, base + ".pdf")
-                    os.makedirs(out_folder, exist_ok=True)
-                    generate_invoice(config, client_obj, inv_no, inv_date or "", new_items, xlsx_path)
-                    generate_pdf_invoice(config, client_obj, inv_no, inv_date or "", new_items, pdf_path)
-                    # Update file paths in DB
-                    import db as _db
-                    with _db.get_connection() as conn:
-                        cur = conn.cursor()
-                        cur.execute(
-                            "UPDATE dbo.TaxInvoices SET PdfPath=?, ExcelPath=? WHERE InvoiceId=?",
-                            pdf_path, xlsx_path, invoice_id)
-                        conn.commit()
-                    flash(f"Invoice {inv_no} updated & files regenerated.")
+                    flash(f"Invoice {new_inv_no} updated and PDF/Excel regenerated.")
                 except Exception as regen_exc:  # noqa: BLE001
-                    flash(f"Saved, but file regeneration failed: {regen_exc}")
+                    flash(f"Saved in accounts, but file regeneration failed: {regen_exc}")
             else:
-                new_name = next(
-                    (s["BusinessSegmentName"] for s in segments
-                     if s["BusinessSegmentId"] == new_seg), str(new_seg))
-                flash(f"Invoice {inv.get('InvoiceNumber')} updated (DB only — files not regenerated).")
+                flash(f"Invoice {new_inv_no} updated (database only — files not regenerated).")
 
             import audit as audit_mod
             audit_mod.log(
@@ -275,11 +272,17 @@ def invoice_convert_to_tax(invoice_id):
     if not inv:
         flash("Invoice not found.")
         return redirect(url_for("accounts.invoices"))
+    try:
+        _assert_can_edit_invoice(inv)
+    except PermissionError as exc:
+        flash(str(exc))
+        return redirect(url_for("accounts.invoices"))
     if (inv.get("InvoiceType") or "TAX").upper() != "PROFORMA":
         flash("Only proforma invoices can be converted to tax invoices.")
         return redirect(url_for("accounts.invoices"))
 
     import re as _re
+    import json as _json
     from generator import generate_invoice
     from pdf_generator import generate_pdf_invoice
     from invoice_core import next_invoice_number
@@ -291,9 +294,9 @@ def invoice_convert_to_tax(invoice_id):
         os.makedirs(out_folder, exist_ok=True)
 
         line_items = ls.get_invoice_line_items(invoice_id)
-        items = [{"particulars": it["Particulars"],
-                  "date": it["WorkDate"].strftime("%d-%m-%Y") if it.get("WorkDate") else "",
-                  "amount": float(it["Amount"])} for it in line_items]
+        items = [{"particulars": it.get("Particulars") or "",
+                  "date": inf._fmt_date(it.get("WorkDate")),
+                  "amount": float(it.get("Amount") or 0)} for it in line_items]
 
         client_row = ls.get_client(inv["ClientId"]) or {}
         import clients as clients_mod
@@ -312,7 +315,7 @@ def invoice_convert_to_tax(invoice_id):
             return _re.sub(r"\s+", "_", t)[:60] or "invoice"
 
         base = f"Invoice_{_safe(tax_no)}_{_safe(client_obj.name)}"
-        inv_date = inv["InvoiceDate"].strftime("%d-%m-%Y") if inv.get("InvoiceDate") else ""
+        inv_date = inf._fmt_date(inv.get("InvoiceDate"))
         xlsx_path = os.path.join(out_folder, base + ".xlsx")
         pdf_path = os.path.join(out_folder, base + ".pdf")
         generate_invoice(config, client_obj, tax_no, inv_date, items, xlsx_path, document_type="tax")
@@ -518,7 +521,8 @@ def receipts():
 @accounts_bp.route("/api/client/<int:client_id>/open-invoices")
 def api_client_open_invoices(client_id):
     try:
-        rows = ls.client_open_invoices(client_id)
+        exclude_id = request.args.get("receipt_id", type=int)
+        rows = ls.client_open_invoices(client_id, exclude_receipt_id=exclude_id)
         out = []
         for r in rows:
             out.append({

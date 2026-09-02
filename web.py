@@ -79,7 +79,7 @@ def inject_globals():
         "can_profit": auth.can_profit(u) if u else False,
         "can_management": auth.can_management_dashboard(u) if u else False,
         "can_edit_invoices": bool(
-            u and (auth.is_admin(u) or auth.can(u, "invoices") or auth.can(u, "receipts"))
+            u and auth.normalize_role(auth.get_role(u)) != auth.ROLE_VIEWER
         ),
     }
 
