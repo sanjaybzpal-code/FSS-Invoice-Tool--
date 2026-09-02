@@ -54,7 +54,7 @@
 
       <td>{{ i.InvoiceDate | fdate }}</td>
 
-      <td>{{ i.InvoiceNumber }}</td><td class="num">{{ "{:,.2f}".format(i.TotalAmount) }}</td>
+        <td><a href="{{ url_for('accounts.invoice_edit', invoice_id=i.InvoiceId) }}">{{ i.InvoiceNumber }}</a></td><td class="num">{{ "{:,.2f}".format(i.TotalAmount) }}</td>
 
     </tr>{% else %}<tr><td colspan="3">None</td></tr>{% endfor %}</tbody>
 

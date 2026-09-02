@@ -19,7 +19,7 @@
         "igst_rate": 18.0
     },
     "invoice": {
-        "next_number": 34,
+        "next_number": 41,
         "number_prefix": "",
         "date_format": "%d-%m-%Y"
     },

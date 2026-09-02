@@ -8,7 +8,7 @@
   <div>
     <label>Date</label>
     <input name="receipt_date"
-           value="{{ edit_receipt.ReceiptDate.strftime('%d-%m-%Y') if edit_receipt and edit_receipt.ReceiptDate else today }}"
+           value="{{ edit_receipt.ReceiptDate | fdate if edit_receipt else today }}"
            placeholder="dd-mm-yyyy">
   </div>
   <div>

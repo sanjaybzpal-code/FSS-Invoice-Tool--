@@ -32,11 +32,12 @@
 {% endif %}
 
 <div class="card">
-  <h2>Recent Receipts</h2>
+  <h2>Saved Receipts</h2>
+  <p style="font-size:13px;color:var(--muted);margin:0 0 12px">Click <b>Edit</b> on any receipt — including older ones — to change amount, TDS, GST, date, or linked invoices.</p>
   <table>
     <thead><tr>
       <th>Date</th><th>Receipt No.</th><th>Client</th><th>Mode</th>
-      <th>Cash</th><th>TDS</th><th>GST Paid</th><th>Reference</th><th></th>
+      <th>Cash</th><th>TDS</th><th>GST Paid</th><th>Reference</th><th>Actions</th>
     </tr></thead>
     <tbody>
       {% for r in receipts %}
@@ -70,6 +71,7 @@
 (function(){
   const form = document.getElementById('receiptForm');
   if (!form) return;
+  const receiptId = form.querySelector('[name=receipt_id]')?.value || '';
   const clientSel = form.querySelector('[name=client_id]');
   const invBox = document.getElementById('openInvoicesBox');
   const taxableIn = form.querySelector('[name=taxable_amount]');
@@ -93,18 +95,19 @@
     invBox.innerHTML = '<span class="small">Loading open invoices…</span>';
     if (!cid){ invBox.innerHTML = ''; return; }
     try {
-      const res = await fetch('/accounts/api/client/' + cid + '/open-invoices');
+      const url = '/accounts/api/client/' + cid + '/open-invoices' + (receiptId ? ('?receipt_id=' + receiptId) : '');
+      const res = await fetch(url);
       const data = await res.json();
       if (!data.ok){ invBox.innerHTML = ''; return; }
       if (!data.invoices.length){
         invBox.innerHTML = '<span class="small">No open tax invoices for this client.</span>';
         return;
       }
-      const selIds = {{ edit_alloc.invoice_ids | tojson if edit_alloc else '[]' }};
+      const selIds = ({{ edit_alloc.invoice_ids | tojson if edit_alloc else '[]' }} || []).map(Number);
       invBox.innerHTML = data.invoices.map(inv =>
         `<label style="display:block;font-size:13px;margin:4px 0">
           <input type="checkbox" name="invoice_ids" value="${inv.InvoiceId}"
-            ${selIds.includes(inv.InvoiceId)?'checked':''}
+            ${selIds.includes(Number(inv.InvoiceId))?'checked':''}
             data-taxable="${inv.TaxableAmount}" data-gst="${(inv.TotalAmount - inv.TaxableAmount).toFixed(2)}">
           ${inv.InvoiceNumber} — pending ₹ ${inv.Pending.toLocaleString('en-IN',{minimumFractionDigits:2})}
           (taxable ₹ ${inv.TaxableAmount.toLocaleString('en-IN',{minimumFractionDigits:2})})

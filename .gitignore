@@ -17,6 +17,8 @@ Exports/
 temp_imports/
 clients_cache.json
 invoices_log.json
+staad_report_tool/**/_fig/
+staad_report_tool/staad_report/*.pdf
 
 # IDE
 .vscode/

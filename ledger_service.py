@@ -29,11 +29,17 @@ def _row(cursor) -> dict | None:
 def _parse_date(value: str | date | None) -> date | None:
     if not value:
         return None
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
+    s = str(value).strip()
+    if "T" in s:
+        s = s.split("T", 1)[0]
+    s = s[:10]
     for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
         try:
-            return datetime.strptime(str(value).strip(), fmt).date()
+            return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
     return None
@@ -194,6 +200,25 @@ def record_tax_invoice(client_id: int, invoice_number: str, invoice_date: str,
             client_id, invoice_number, invoice_date, taxable, cgst, sgst, igst,
             total, supply_type, line_items, pdf_path, excel_path, created_by,
             segment_id, invoice_type)
+    existing = find_invoice_by_number(str(invoice_number))
+    if existing:
+        update_invoice(
+            int(existing["InvoiceId"]),
+            segment_id=segment_id,
+            invoice_date=invoice_date,
+            client_id=client_id,
+            taxable_amount=taxable,
+            cgst_amount=cgst,
+            sgst_amount=sgst,
+            igst_amount=igst,
+            total_amount=total,
+            supply_type=supply_type,
+            line_items=line_items,
+            invoice_type=(invoice_type or existing.get("InvoiceType") or "TAX"),
+            pdf_path=pdf_path or None,
+            excel_path=excel_path or None,
+        )
+        return int(existing["InvoiceId"])
     inv_date = _parse_date(invoice_date) or date.today()
     terms = 30
     try:
@@ -412,7 +437,26 @@ def max_tax_invoice_number() -> int:
         return n
 
 
-def list_invoices(client_id: int | None = None, limit: int = 500,
+def find_invoice_by_number(invoice_number: str) -> dict | None:
+    num = str(invoice_number or "").strip()
+    if not num:
+        return None
+    s = _snap()
+    if s:
+        return s.find_invoice_by_number(num)
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT i.*, c.ClientName, s.BusinessSegmentName
+               FROM dbo.TaxInvoices i
+               INNER JOIN dbo.ClientMaster c ON c.ClientId = i.ClientId
+               LEFT JOIN dbo.BusinessSegments s ON s.BusinessSegmentId = i.BusinessSegmentId
+               WHERE i.InvoiceNumber = ?""",
+            num)
+        return _row(cur)
+
+
+def list_invoices(client_id: int | None = None, limit: int = 5000,
                   segment_id: int | None = None,
                   invoice_type: str | None = None) -> list[dict]:
     s = _snap()
@@ -503,20 +547,49 @@ def update_invoice(invoice_id: int, segment_id: int | None = None,
                    igst_amount: float | None = None,
                    total_amount: float | None = None,
                    supply_type: str | None = None,
-                   line_items: list[dict] | None = None) -> None:
+                   line_items: list[dict] | None = None,
+                   invoice_number: str | None = None,
+                   invoice_type: str | None = None,
+                   pdf_path: str | None = None,
+                   excel_path: str | None = None) -> None:
     """Full invoice edit — update any combination of fields and replace line items.
 
     If line_items is provided, all existing line items are deleted and replaced.
     Receipt allocations are updated when segment or total changes.
     """
+    s = _snap()
+    if s:
+        s.update_invoice(
+            invoice_id, segment_id=segment_id, invoice_date=invoice_date,
+            client_id=client_id, taxable_amount=taxable_amount,
+            cgst_amount=cgst_amount, sgst_amount=sgst_amount,
+            igst_amount=igst_amount, total_amount=total_amount,
+            supply_type=supply_type, line_items=line_items,
+            invoice_number=invoice_number, invoice_type=invoice_type,
+            pdf_path=pdf_path, excel_path=excel_path)
+        return
     inv_date = _parse_date(invoice_date) if invoice_date else None
     sets, vals = [], []
+    if invoice_number is not None:
+        new_no = str(invoice_number).strip()
+        if not new_no:
+            raise ValueError("Invoice number cannot be empty.")
+        other = find_invoice_by_number(new_no)
+        if other and int(other["InvoiceId"]) != int(invoice_id):
+            raise ValueError(f"Invoice number {new_no} is already used.")
+        sets.append("InvoiceNumber = ?")
+        vals.append(new_no)
     if segment_id is not None:
         sets.append("BusinessSegmentId = ?")
         vals.append(segment_id)
     if inv_date is not None:
         sets.append("InvoiceDate = ?")
         vals.append(inv_date)
+        current = get_invoice(invoice_id) or {}
+        terms = int(current.get("PaymentTermsDays") or 30)
+        from datetime import timedelta
+        sets.append("DueDate = ?")
+        vals.append(inv_date + timedelta(days=terms))
     if client_id is not None:
         sets.append("ClientId = ?")
         vals.append(client_id)
@@ -538,6 +611,15 @@ def update_invoice(invoice_id: int, segment_id: int | None = None,
     if supply_type is not None:
         sets.append("SupplyType = ?")
         vals.append(supply_type)
+    if invoice_type is not None:
+        sets.append("InvoiceType = ?")
+        vals.append(str(invoice_type).upper())
+    if pdf_path is not None:
+        sets.append("PdfPath = ?")
+        vals.append(pdf_path or None)
+    if excel_path is not None:
+        sets.append("ExcelPath = ?")
+        vals.append(excel_path or None)
 
     with db.get_connection() as conn:
         cur = conn.cursor()
@@ -558,15 +640,15 @@ def update_invoice(invoice_id: int, segment_id: int | None = None,
                 "DELETE FROM dbo.InvoiceLineItems WHERE InvoiceId = ?",
                 invoice_id)
             for i, it in enumerate(line_items, 1):
-                wd = _parse_date(it.get("date"))
+                wd = _parse_date(it.get("date") or it.get("WorkDate"))
                 cur.execute(
                     """INSERT INTO dbo.InvoiceLineItems
                        (InvoiceId, SrNo, Particulars, WorkDate, Amount)
                        VALUES (?,?,?,?,?)""",
                     invoice_id, i,
-                    (it.get("particulars") or "").strip(),
+                    (it.get("particulars") or it.get("Particulars") or "").strip(),
                     wd,
-                    float(it.get("amount") or 0))
+                    float(it.get("amount") if it.get("amount") is not None else it.get("Amount") or 0))
         conn.commit()
 
 
@@ -644,21 +726,32 @@ def _pending_debits(cur, client_id: int) -> list[dict]:
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def _invoice_pending(cur, client_id: int) -> list[dict]:
-    """Tax invoices only with pending balance."""
+def _invoice_pending(cur, client_id: int,
+                     exclude_receipt_id: int | None = None) -> list[dict]:
+    """Tax invoices with pending balance.
+
+    When editing a receipt, pass exclude_receipt_id so that invoice is still
+    listed (pending includes this receipt's current allocation).
+    """
+    excl = int(exclude_receipt_id or 0)
     cur.execute(
         """SELECT i.InvoiceId, i.InvoiceNumber, i.TaxableAmount, i.TotalAmount,
                   i.BusinessSegmentId,
-                  i.TotalAmount - ISNULL(SUM(ria.AllocatedAmount), 0) AS Pending
+                  i.TotalAmount - ISNULL(SUM(CASE
+                      WHEN ria.ReceiptId IS NULL OR ria.ReceiptId <> ?
+                      THEN ria.AllocatedAmount ELSE 0 END), 0) AS Pending
            FROM dbo.TaxInvoices i
            LEFT JOIN dbo.ReceiptInvoiceAllocations ria ON ria.InvoiceId = i.InvoiceId
            WHERE i.ClientId = ?
              AND ISNULL(i.InvoiceType, N'TAX') <> N'PROFORMA'
-           GROUP BY i.InvoiceId, i.InvoiceNumber, i.TaxableAmount, i.TotalAmount,
-                    i.BusinessSegmentId, i.TotalAmount
-           HAVING i.TotalAmount - ISNULL(SUM(ria.AllocatedAmount), 0) > 0.01
+           GROUP BY i.InvoiceId, i.InvoiceNumber, i.InvoiceDate, i.TaxableAmount,
+                    i.TotalAmount, i.BusinessSegmentId
+           HAVING i.TotalAmount - ISNULL(SUM(CASE
+                      WHEN ria.ReceiptId IS NULL OR ria.ReceiptId <> ?
+                      THEN ria.AllocatedAmount ELSE 0 END), 0) > 0.01
+               OR MAX(CASE WHEN ria.ReceiptId = ? THEN 1 ELSE 0 END) = 1
            ORDER BY i.InvoiceDate, i.InvoiceId""",
-        client_id)
+        excl, client_id, excl, excl)
     cols = [c[0] for c in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
@@ -715,7 +808,7 @@ def _allocate_receipt(cur, receipt_id: int, client_id: int, amount: float,
         remaining -= alloc
 
 
-def list_receipts(client_id: int | None = None, limit: int = 200) -> list[dict]:
+def list_receipts(client_id: int | None = None, limit: int = 5000) -> list[dict]:
     s = _snap()
     if s:
         return s.list_receipts(client_id, limit)
@@ -775,11 +868,15 @@ def delete_receipt(receipt_id: int) -> tuple[bool, str]:
     return True, f"Receipt {rcpt['ReceiptNumber']} deleted."
 
 
-def client_open_invoices(client_id: int) -> list[dict]:
-    """Open tax invoices for receipt linking UI."""
+def client_open_invoices(client_id: int,
+                         exclude_receipt_id: int | None = None) -> list[dict]:
+    """Open tax invoices for receipt linking UI (all ages)."""
+    s = _snap()
+    if s:
+        return s.client_open_invoices(client_id, exclude_receipt_id)
     with db.get_connection() as conn:
         cur = conn.cursor()
-        return _invoice_pending(cur, client_id)
+        return _invoice_pending(cur, client_id, exclude_receipt_id)
 
 
 # --- Reports -----------------------------------------------------------------

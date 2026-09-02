@@ -32,6 +32,10 @@ Backed by **SQL Server** (`FSSInvoice` database).
 
 Production server uses **Waitress** (`run_live.py`), not the Flask debug server.
 
+### STAAD diagram PDF reports
+
+Separate utility in [`staad_report_tool/`](staad_report_tool/README.md): generate FSS-branded diagram PDFs from STAAD `.std` files (not linked to invoicing). Run `staad_report_tool\Generate STAAD Report.bat` or see that README.
+
 ---
 
 ## Main screens

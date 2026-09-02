@@ -10,9 +10,7 @@
 
   <p style="font-size:13px;color:var(--muted);margin:0 0 14px">
 
-    Download PDF or Excel anytime (office files, or rebuilt from saved invoice data on the cloud).
-
-    Use <b>Edit</b> to correct segment tagging errors.
+    Download PDF or Excel anytime. Use <b>Edit</b> on any invoice — including older ones — to change client, dates, line items, and regenerate files.
 
   </p>
 
@@ -135,8 +133,9 @@
           {% if can_edit_invoices %}
 
           <a class="btn ghost" style="padding:5px 10px;font-size:12px"
-
              href="{{ url_for('accounts.invoice_edit', invoice_id=i.InvoiceId) }}">Edit</a>
+          <a class="btn ghost" style="padding:5px 10px;font-size:12px"
+             href="{{ url_for('index', edit=i.InvoiceId) }}">Generator</a>
 
           {% if (i.InvoiceType or 'TAX') == 'PROFORMA' %}
           <form method="post" action="{{ url_for('accounts.invoice_convert_to_tax', invoice_id=i.InvoiceId) }}"

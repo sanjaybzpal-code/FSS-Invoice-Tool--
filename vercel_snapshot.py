@@ -232,9 +232,20 @@ def get_invoice(invoice_id: int) -> dict | None:
     return None
 
 
+def find_invoice_by_number(invoice_number: str) -> dict | None:
+    num = str(invoice_number or "").strip()
+    if not num:
+        return None
+    for inv in _tables().get("TaxInvoices", []):
+        if str(inv.get("InvoiceNumber") or "").strip() == num:
+            return _enrich_invoice(inv)
+    return None
+
+
 def get_invoice_line_items(invoice_id: int) -> list[dict]:
     items = [i for i in _tables().get("InvoiceLineItems", [])
-             if int(i.get("InvoiceId", 0)) == invoice_id]
+             if int(i.get("InvoiceId", 0)) == invoice_id
+             and not i.get("_deleted")]
     return sorted(items, key=lambda r: int(r.get("SrNo") or 0))
 
 
@@ -344,6 +355,25 @@ def record_tax_invoice(client_id: int, invoice_number: str, invoice_date: str,
                        pdf_path: str = "", excel_path: str = "",
                        created_by: str = "", segment_id: int = 1,
                        invoice_type: str = "TAX") -> int:
+    existing = find_invoice_by_number(str(invoice_number))
+    if existing:
+        update_invoice(
+            int(existing["InvoiceId"]),
+            segment_id=segment_id,
+            invoice_date=invoice_date,
+            client_id=client_id,
+            taxable_amount=taxable,
+            cgst_amount=cgst,
+            sgst_amount=sgst,
+            igst_amount=igst,
+            total_amount=total,
+            supply_type=supply_type,
+            line_items=line_items,
+            invoice_type=invoice_type,
+            pdf_path=pdf_path or None,
+            excel_path=excel_path or None,
+        )
+        return int(existing["InvoiceId"])
     from datetime import timedelta
     inv_date = _parse_date(invoice_date) or date.today()
     invoice_id = _next_pk("TaxInvoices", "InvoiceId")
@@ -382,6 +412,112 @@ def record_tax_invoice(client_id: int, invoice_number: str, invoice_date: str,
     if lines:
         _persist_overlay_rows("InvoiceLineItems", "LineId", lines)
     return invoice_id
+
+
+def update_invoice(invoice_id: int, segment_id: int | None = None,
+                   invoice_date: str | None = None,
+                   client_id: int | None = None,
+                   taxable_amount: float | None = None,
+                   cgst_amount: float | None = None,
+                   sgst_amount: float | None = None,
+                   igst_amount: float | None = None,
+                   total_amount: float | None = None,
+                   supply_type: str | None = None,
+                   line_items: list[dict] | None = None,
+                   invoice_number: str | None = None,
+                   invoice_type: str | None = None,
+                   pdf_path: str | None = None,
+                   excel_path: str | None = None) -> None:
+    inv = get_invoice(invoice_id)
+    if not inv:
+        raise ValueError("Invoice not found.")
+    row = dict(inv)
+    if invoice_number is not None:
+        new_no = str(invoice_number).strip()
+        other = find_invoice_by_number(new_no)
+        if other and int(other["InvoiceId"]) != int(invoice_id):
+            raise ValueError(f"Invoice number {new_no} is already used.")
+        row["InvoiceNumber"] = new_no
+    if segment_id is not None:
+        row["BusinessSegmentId"] = segment_id
+    if invoice_date:
+        parsed = _parse_date(invoice_date)
+        if parsed:
+            from datetime import timedelta
+            row["InvoiceDate"] = parsed
+            terms = int(row.get("PaymentTermsDays") or 30)
+            row["DueDate"] = parsed + timedelta(days=terms)
+    if client_id is not None:
+        row["ClientId"] = int(client_id)
+    if taxable_amount is not None:
+        row["TaxableAmount"] = float(taxable_amount)
+    if cgst_amount is not None:
+        row["CGSTAmount"] = float(cgst_amount)
+    if sgst_amount is not None:
+        row["SGSTAmount"] = float(sgst_amount)
+    if igst_amount is not None:
+        row["IGSTAmount"] = float(igst_amount)
+    if total_amount is not None:
+        row["TotalAmount"] = float(total_amount)
+    if supply_type is not None:
+        row["SupplyType"] = supply_type
+    if invoice_type is not None:
+        row["InvoiceType"] = str(invoice_type).upper()
+    if pdf_path is not None:
+        row["PdfPath"] = pdf_path or ""
+    if excel_path is not None:
+        row["ExcelPath"] = excel_path or ""
+    _persist_overlay_rows("TaxInvoices", "InvoiceId", [row])
+    if line_items is not None:
+        old = get_invoice_line_items(invoice_id)
+        tombstones = [{**dict(it), "_deleted": 1, "Particulars": "", "Amount": 0}
+                      for it in old]
+        if tombstones:
+            _persist_overlay_rows("InvoiceLineItems", "LineId", tombstones)
+        line_id = _next_pk("InvoiceLineItems", "LineId")
+        lines = []
+        for i, it in enumerate(line_items, 1):
+            lid = int(old[i - 1]["LineId"]) if i <= len(old) else line_id
+            if i > len(old):
+                line_id += 1
+            lines.append({
+                "LineId": lid,
+                "InvoiceId": invoice_id,
+                "SrNo": i,
+                "Particulars": (it.get("particulars") or it.get("Particulars") or "").strip(),
+                "WorkDate": _parse_date(it.get("date") or it.get("WorkDate")),
+                "Amount": float(it.get("amount") if it.get("amount") is not None else it.get("Amount") or 0),
+                "_deleted": 0,
+            })
+        if lines:
+            _persist_overlay_rows("InvoiceLineItems", "LineId", lines)
+
+
+def client_open_invoices(client_id: int,
+                         exclude_receipt_id: int | None = None) -> list[dict]:
+    excl = int(exclude_receipt_id or 0)
+    allocs = _tables().get("ReceiptInvoiceAllocations", [])
+    out = []
+    for inv in _tax_invoices_only(_tables().get("TaxInvoices", [])):
+        if int(inv.get("ClientId") or 0) != int(client_id):
+            continue
+        iid = int(inv.get("InvoiceId") or 0)
+        pending = float(inv.get("TotalAmount") or 0)
+        linked = False
+        for a in allocs:
+            if int(a.get("InvoiceId") or 0) != iid:
+                continue
+            rid = int(a.get("ReceiptId") or 0)
+            if excl and rid == excl:
+                linked = True
+                continue
+            pending -= float(a.get("AllocatedAmount") or 0)
+        if pending > 0.01 or linked:
+            row = dict(inv)
+            row["Pending"] = round(max(pending, 0), 2)
+            out.append(row)
+    out.sort(key=lambda r: (_parse_date(r.get("InvoiceDate")) or date.min, int(r.get("InvoiceId") or 0)))
+    return out
 
 
 def peek_receipt_number() -> str:

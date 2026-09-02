@@ -167,6 +167,14 @@
       <div class="hint">Required for management reporting.</div>
     </div>
     <input type="hidden" id="docType" value="{{ default_doc_type or 'tax' }}">
+    <input type="hidden" id="editInvoiceId" value="">
+    <div style="margin-top:14px">
+      <label for="loadInvoice">Edit a saved invoice (any date)</label>
+      <select id="loadInvoice">
+        <option value="">— Load any saved invoice to change it —</option>
+      </select>
+      <div class="hint">Pick an older invoice, edit particulars, then click Update. The same invoice number is kept.</div>
+    </div>
 
     <!-- New client entry -->
     <div class="newbox" id="newClientBox">
@@ -260,7 +268,14 @@
   const NEXT_PF = {{ next_proforma | tojson }};
   const DEFAULT_DOC = {{ (default_doc_type or 'tax') | tojson }};
 
+  let editingId = 0;
+
   function setDocType(type){
+    editingId = 0;
+    const hid = $('editInvoiceId');
+    if (hid) hid.value = '';
+    const load = $('loadInvoice');
+    if (load) load.value = '';
     const pf = type === 'proforma';
     $('docType').value = pf ? 'proforma' : 'tax';
     $('tabTax').classList.toggle('active', !pf);
@@ -387,6 +402,7 @@
       save_client: newSel ? $('ncSave').checked : false,
       invoice_no: $('invoiceNo').value,
       invoice_date: $('invoiceDate').value,
+      invoice_id: editingId || parseInt($('editInvoiceId').value || '0', 10) || undefined,
       segment_id: parseInt(seg, 10),
       document_type: $('docType').value,
       formats, items
@@ -407,12 +423,13 @@
         return;
       }
       if(!data.ok){ toast(data.message || 'Failed.', 'err'); return; }
-      $('invoiceNo').value = data.next_number;
+      if (!data.updated) $('invoiceNo').value = data.next_number;
       triggerDownloads(data.files);
       const kind = data.document_type === 'proforma' ? 'Proforma' : 'Tax Invoice';
+      const verb = data.updated ? 'updated' : 'created';
       const links = data.files.map(f =>
         `<a href="/download/${encodeURIComponent(f)}">${f.split('.').pop().toUpperCase()}</a>`).join(' ');
-      toast(`${kind} created (${data.supply_type}). Grand Total Rs. ${fmt(data.total)}.<br>Download: ${links}<br><a href="/accounts/invoices">Open Invoice Archive</a>`, 'ok');
+      toast(`${kind} ${verb} (${data.supply_type}). Grand Total Rs. ${fmt(data.total)}.<br>Download: ${links}<br><a href="/accounts/invoices">Open Invoice Archive</a>`, 'ok');
       if (newSel && $('ncSave').checked){
         setTimeout(()=> location.reload(), 1500);  // refresh dropdown with saved client
       }
@@ -447,6 +464,65 @@
   for(let i=0;i<START_ROWS;i++) addRow();
   recompute();
   setDocType(DEFAULT_DOC);
+
+  async function fillSavedInvoice(id){
+    const r = await fetch('/api/invoice/' + id);
+    const d = await r.json();
+    if (!d.ok){ toast(d.message || 'Could not load invoice', 'err'); return; }
+    const inv = d.invoice;
+    editingId = inv.invoice_id;
+    $('editInvoiceId').value = String(editingId);
+    $('docType').value = inv.document_type;
+    $('tabTax').classList.toggle('active', inv.document_type !== 'proforma');
+    $('tabProforma').classList.toggle('active', inv.document_type === 'proforma');
+    $('proformaBanner').classList.toggle('show', inv.document_type === 'proforma');
+    $('invoiceNo').value = inv.invoice_no;
+    $('invoiceDate').value = inv.invoice_date || '';
+    if (inv.segment_id) $('segment').value = String(inv.segment_id);
+    const clientSel = $('client');
+    let matched = false;
+    for (const opt of clientSel.options){
+      if (opt.value && opt.value === inv.client){ clientSel.value = opt.value; matched = true; break; }
+    }
+    if (matched) showClient();
+    $('rows').innerHTML = '';
+    (inv.items || []).forEach(it => {
+      addRow();
+      const tr = $('rows').lastElementChild;
+      tr.querySelector('.p').value = it.particulars || '';
+      tr.querySelector('.d').value = it.date || '';
+      tr.querySelector('.a').value = it.amount ? Number(it.amount).toFixed(2) : '';
+    });
+    if (!$('rows').children.length) addRow();
+    recompute();
+    $('generate').textContent = inv.document_type === 'proforma' ? 'Update Proforma Invoice' : 'Update Saved Invoice';
+  }
+
+  (async function initSaved(){
+    const sel = $('loadInvoice');
+    if (!sel) return;
+    try {
+      const r = await fetch('/api/invoices/recent');
+      const d = await r.json();
+      if (d.ok){
+        d.invoices.forEach(inv => {
+          const o = document.createElement('option');
+          o.value = inv.invoice_id;
+          o.textContent = inv.invoice_no + ' — ' + inv.client + ' — ' + (inv.invoice_date || '');
+          sel.appendChild(o);
+        });
+      }
+    } catch (e) {}
+    sel.addEventListener('change', () => {
+      if (sel.value) fillSavedInvoice(sel.value);
+    });
+    const params = new URLSearchParams(location.search);
+    const edit = params.get('edit');
+    if (edit){
+      sel.value = edit;
+      fillSavedInvoice(edit);
+    }
+  })();
 </script>
 </body>
 </html>
